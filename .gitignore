@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local JoinQuant secrets and captures
+joinquant_auth.local.json
+*.local.json
+*.har
+*.HAR
+.env
+
+# Generated backtest outputs
+results/
+logs/
+*.log
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

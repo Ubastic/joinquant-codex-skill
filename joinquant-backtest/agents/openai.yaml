@@ -1,0 +1,4 @@
+interface:
+  display_name: "JoinQuant Backtest"
+  short_description: "Run and inspect JoinQuant web backtests"
+  default_prompt: "Use $joinquant-backtest to run a JoinQuant strategy backtest and inspect the logs."
