@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import random
 import os
 import re
 import time
@@ -49,6 +50,13 @@ CRITICAL_LOG_PATTERNS = [
 ]
 
 
+def _is_retryable_build_payload(payload: Dict[str, Any]) -> bool:
+    status = str(payload.get("status", ""))
+    code = str(payload.get("code", ""))
+    msg = str(payload.get("msg", ""))
+    return status == "2" and (code == "20000" or msg == "50000")
+
+
 class JoinQuantWebClient:
     """Cookie-authenticated client for JoinQuant web backtests."""
 
@@ -63,6 +71,8 @@ class JoinQuantWebClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
+        # Ignore ambient HTTP(S)_PROXY env vars; require explicit proxy config.
+        self.session.trust_env = False
         self.session.headers.update(
             {
                 "User-Agent": user_agent
@@ -71,7 +81,7 @@ class JoinQuantWebClient:
                 "Accept-Language": "zh-CN,zh;q=0.9",
             }
         )
-        final_proxy = proxy or os.getenv("JOINQUANT_PROXY") or ""
+        final_proxy = (proxy or os.getenv("JOINQUANT_PROXY") or "").strip()
         if final_proxy:
             self.session.proxies.update({"http": final_proxy, "https": final_proxy})
         if cookie:
@@ -198,8 +208,9 @@ class JoinQuantWebClient:
         frequency: str,
         py_version: str,
         mode: str,
+        use_credit: bool = False,
     ) -> Dict[str, Any]:
-        return {
+        form = {
             "algorithm[algorithmId]": draft.algorithm_id,
             "algorithm[userId]": draft.user_id,
             "algorithm[accessControl]": draft.access_control,
@@ -217,6 +228,9 @@ class JoinQuantWebClient:
             "token": draft.token,
             "ajax": "1",
         }
+        if use_credit:
+            form["useCredit"] = "1"
+        return form
 
     def save_algorithm(self, draft: JoinQuantDraft, code: str, name: str, start_time: str, end_time: str, base_capital: int, frequency: str = "day", py_version: str = "3") -> Dict[str, Any]:
         data = self._build_form(draft, code, name, start_time, end_time, base_capital, frequency, py_version, "save")
@@ -226,13 +240,46 @@ class JoinQuantWebClient:
             raise RuntimeError(f"save failed: {payload}")
         return payload
 
-    def build_backtest(self, draft: JoinQuantDraft, code: str, name: str, start_time: str, end_time: str, base_capital: int, frequency: str = "day", py_version: str = "3") -> Dict[str, Any]:
-        data = self._build_form(draft, code, name, start_time, end_time, base_capital, frequency, py_version, "build")
-        resp = self._request("POST", "/algorithm/index/build", params={"ajax": 1}, data=data, headers=self._xhr_headers(self._edit_referer(draft.algorithm_id, base_capital, start_time, end_time)))
-        payload = self._parse_json_response(resp)
-        if payload.get("status") != "0":
-            raise RuntimeError(f"build failed: {payload}")
-        return payload
+    def build_backtest(
+        self,
+        draft: JoinQuantDraft,
+        code: str,
+        name: str,
+        start_time: str,
+        end_time: str,
+        base_capital: int,
+        frequency: str = "day",
+        py_version: str = "3",
+        max_retries: int = 4,
+        initial_retry_delay_sec: float = 2.0,
+        use_credit: bool = False,
+    ) -> Dict[str, Any]:
+        data = self._build_form(
+            draft,
+            code,
+            name,
+            start_time,
+            end_time,
+            base_capital,
+            frequency,
+            py_version,
+            "build",
+            use_credit=use_credit,
+        )
+        delay_sec = max(initial_retry_delay_sec, 0.0)
+        last_payload: Dict[str, Any] = {}
+        for attempt in range(max_retries + 1):
+            resp = self._request("POST", "/algorithm/index/build", params={"ajax": 1}, data=data, headers=self._xhr_headers(self._edit_referer(draft.algorithm_id, base_capital, start_time, end_time)))
+            payload = self._parse_json_response(resp)
+            last_payload = payload
+            if payload.get("status") == "0":
+                return payload
+            if attempt >= max_retries or not _is_retryable_build_payload(payload):
+                raise RuntimeError(f"build failed: {payload}")
+            sleep_for = delay_sec + random.uniform(0.0, min(delay_sec, 1.0))
+            time.sleep(sleep_for)
+            delay_sec = max(delay_sec * 2.0, delay_sec + 1.0)
+        raise RuntimeError(f"build failed: {last_payload}")
 
     def get_runtime_info(self, backtest_id: str, token: str) -> Dict[str, Any]:
         resp = self._request("GET", "/algorithm/backtest/runTimeInfo", params={"token": token, "backtestId": backtest_id})
@@ -271,10 +318,20 @@ class JoinQuantWebClient:
                 raise TimeoutError(f"backtest timeout ({timeout_sec}s), last runtime={last_runtime}")
             time.sleep(poll_interval)
 
-    def run_backtest(self, code: str, name: str, start_time: str, end_time: str, base_capital: int = 100000, frequency: str = "day", py_version: str = "3", wait_timeout_sec: int = 300, poll_interval: float = 2.0) -> Dict[str, Any]:
+    def run_backtest(self, code: str, name: str, start_time: str, end_time: str, base_capital: int = 100000, frequency: str = "day", py_version: str = "3", wait_timeout_sec: int = 300, poll_interval: float = 2.0, use_credit: bool = False) -> Dict[str, Any]:
         draft = self.create_empty_algorithm(base_capital=base_capital)
         self.save_algorithm(draft, code, name, start_time, end_time, base_capital, frequency, py_version)
-        build_payload = self.build_backtest(draft, code, name, start_time, end_time, base_capital, frequency, py_version)
+        build_payload = self.build_backtest(
+            draft,
+            code,
+            name,
+            start_time,
+            end_time,
+            base_capital,
+            frequency,
+            py_version,
+            use_credit=use_credit,
+        )
         data_obj = build_payload.get("data", {})
         if not isinstance(data_obj, dict):
             raise RuntimeError(f"build response data type unexpected: {type(data_obj).__name__}, payload={build_payload}")

@@ -18,6 +18,8 @@ def main() -> int:
     parser.add_argument("--backtest-id", default=None)
     parser.add_argument("--token", default=None)
     parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument("--all-pages", action="store_true", help="Fetch paginated log pages until the server reports max=true")
+    parser.add_argument("--page-size", type=int, default=100, help="Pagination step when --all-pages is used")
     parser.add_argument("--scan", action="store_true")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
@@ -36,6 +38,34 @@ def main() -> int:
     client = JoinQuantWebClient(cookie=auth["cookie"], user_agent=auth.get("user_agent") or None, proxy=args.proxy)
     try:
         payload = client.get_log(backtest_id, token, offset=args.offset)
+        page_payloads = [payload]
+        if args.all_pages:
+            current_offset = int(args.offset)
+            while True:
+                current_data = page_payloads[-1].get("data", {}) if isinstance(page_payloads[-1], dict) else {}
+                if not isinstance(current_data, dict) or bool(current_data.get("max")):
+                    break
+                next_offset = current_offset + max(int(args.page_size), 1)
+                next_payload = client.get_log(backtest_id, token, offset=next_offset)
+                page_payloads.append(next_payload)
+                current_offset = next_offset
+                next_data = next_payload.get("data", {}) if isinstance(next_payload, dict) else {}
+                if not isinstance(next_data, dict) or bool(next_data.get("max")):
+                    break
+        if args.all_pages and len(page_payloads) > 1:
+            merged_lines = []
+            for page in page_payloads:
+                data = page.get("data", {}) if isinstance(page, dict) else {}
+                lines = data.get("logArr", []) if isinstance(data, dict) else []
+                if isinstance(lines, list):
+                    merged_lines.extend(lines)
+            payload = dict(page_payloads[0])
+            data = dict(payload.get("data", {}) if isinstance(payload.get("data"), dict) else {})
+            data["logArr"] = merged_lines
+            data["page_offsets"] = [int(args.offset) + idx * max(int(args.page_size), 1) for idx in range(len(page_payloads))]
+            data["page_count"] = len(page_payloads)
+            data["max"] = True
+            payload["data"] = data
     except Exception as exc:
         print(f"[FAIL] fetch log failed: {exc}")
         return 1
