@@ -12,6 +12,7 @@ description: Operate JoinQuant/Jukuan web backtests with cookie-based authentica
 - After every JoinQuant backtest, fetch and inspect the log before trusting metrics. Reject or flag results with tracebacks, runtime errors, failed orders, zero-share orders, non-lot orders, suspended stocks, limit-up/limit-down failures, or other execution warnings.
 - Start with a short smoke range before long or batch runs when strategy code changed.
 - Use a proxy when required by the user's environment: pass `--proxy "$JQ_PROXY"` or set `JOINQUANT_PROXY`.
+- If JoinQuant responds with `msg=50000` on build, resubmit with `useCredit=1` by passing `--use-credit` to `run_backtest.py`.
 
 ## Quick Start
 

@@ -47,6 +47,25 @@ python scripts/run_backtest.py \
   --poll-interval 2
 ```
 
+Credit-based backtest (`msg=50000`):
+
+JoinQuant's build endpoint may return `status=2` with `msg=50000` when the request must include `useCredit=1`. In that case, rerun with the `--use-credit` flag:
+
+```bash
+python scripts/run_backtest.py \
+  --auth-file joinquant_auth.local.json \
+  --proxy "$JQ_PROXY" \
+  --strategy-file jukuan/my_strategy.py \
+  --name jq-smoke-my-strategy \
+  --start-date 2025-01-02 \
+  --end-date 2026-04-17 \
+  --wait-timeout-sec 1200 \
+  --poll-interval 2 \
+  --use-credit
+```
+
+The client automatically retries a few times on retryable build responses (`status=2`, `code=20000` or `msg=50000`), but you should still pass `--use-credit` when the account/run requires credit mode.
+
 Fetch and scan logs:
 
 ```bash
